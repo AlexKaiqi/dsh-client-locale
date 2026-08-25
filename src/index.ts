@@ -11,6 +11,16 @@ export {
   type LocaleSettings,
 } from './locale-settings.ts'
 
+export {
+  defineMessages,
+  type MessageDescriptor,
+  type MessageDescriptors,
+  type MessageRegistration,
+  type SourceCatalog,
+  type TranslationCatalog,
+  type TranslationReviewState,
+} from './messages.ts'
+
 /** Register the durable locale section when a settings provider exists. */
 export function apply(ctx: Context): void {
   ctx.inject(['settings'], settingsCtx => {

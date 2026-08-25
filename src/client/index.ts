@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import IntlMessageFormat from 'intl-messageformat'
 import type {
   BoundActions,
   LocaleDictOf,
@@ -16,6 +17,11 @@ import {
 } from '../locale-settings.ts'
 import { commonDictionaries, type CommonKey } from '../locales/index.ts'
 import { settingsDictionaries, type SettingsLocaleKey } from '../locales/settings.ts'
+import {
+  type MessageDescriptors,
+  type MessageRegistration,
+  type TranslationCatalog,
+} from '../messages.ts'
 import type { LanguageRowInjected } from './LanguageRow.tsx'
 import { LanguageRow } from './LanguageRow.tsx'
 import { createLanguageRowStore } from './settings-store.ts'
@@ -24,6 +30,15 @@ export type { LanguageRowComponentProps, LanguageRowInjected } from './LanguageR
 export type { LanguageOptionRow, LanguageRowState } from './settings-store.ts'
 export type { CommonKey } from '../locales/index.ts'
 export type { BuiltInLocaleId, LocaleId, LocaleSettings } from '../locale-settings.ts'
+export {
+  defineMessages,
+  type MessageDescriptor,
+  type MessageDescriptors,
+  type MessageRegistration,
+  type SourceCatalog,
+  type TranslationCatalog,
+  type TranslationReviewState,
+} from '../messages.ts'
 export type { Translate, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -114,6 +129,43 @@ function normalizeDefinition(input: LocaleDefinitionInput): LocaleDefinition {
   })
 }
 
+function localeParents(value: string): string[] {
+  let baseName = value.trim().replaceAll('_', '-')
+  try {
+    baseName = new Intl.Locale(baseName).baseName
+  } catch {
+    // A registered legacy alias can still participate in a best-effort chain.
+  }
+  const parts = baseName.split('-').filter(Boolean)
+  const parents: string[] = []
+  while (parts.length > 1) {
+    parts.pop()
+    parents.push(parts.join('-'))
+  }
+  return parents
+}
+
+const RTL_SCRIPTS = new Set(['Adlm', 'Arab', 'Hebr', 'Mand', 'Nkoo', 'Rohg', 'Syrc', 'Thaa'])
+
+function inferLocaleDefinition(id: string): LocaleDefinitionInput {
+  let canonical = id
+  let direction: TextDirection = 'ltr'
+  try {
+    const locale = new Intl.Locale(id).maximize()
+    canonical = new Intl.Locale(id).baseName
+    direction = locale.script && RTL_SCRIPTS.has(locale.script) ? 'rtl' : 'ltr'
+  } catch {
+    // The catalog validator owns strict tag validation; retain legacy IDs here.
+  }
+  let label = canonical
+  try {
+    label = new Intl.DisplayNames([canonical], { type: 'language', fallback: 'code' }).of(canonical) ?? canonical
+  } catch {
+    // A platform without DisplayNames can still expose the stable locale ID.
+  }
+  return { id: canonical, label, languageTag: canonical, direction }
+}
+
 function lookupDefinition(
   definitions: readonly LocaleDefinition[],
   requested: string,
@@ -137,8 +189,10 @@ function lookupDefinition(
 export class LocaleRuntime {
   private readonly dicts = new Map<string, Map<string, LocaleDict>>()
   private readonly bound = new Map<string, Translate>()
+  private readonly formatters = new Map<string, IntlMessageFormat>()
   private readonly listeners = new Set<() => void>()
   private readonly catalog = new Map<string, LocaleDefinition>()
+  private readonly sourceLocales = new Map<string, LocaleId>()
   private snapshot: LocaleSnapshot
   private readonly ctx: Context
   private readonly host: SettingsScope<LocaleSettings> | undefined
@@ -190,6 +244,86 @@ export class LocaleRuntime {
     void this.host?.set(LOCALE_PREFERENCE_FIELD, match.id)
   }
 
+  /** Register one authoritative source catalog plus any generated translations. */
+  registerMessages(namespace: string, registration: MessageRegistration): () => void {
+    if (this.sourceLocales.has(namespace)) {
+      throw new Error(`locale namespace "${namespace}" already has a source locale`)
+    }
+    const sourceLocale = registration.sourceLocale.trim()
+    if (!sourceLocale) throw new Error('message source locale must be non-empty')
+    const source = this.dictionaryFromDescriptors(registration.messages)
+    const dictionaries: Record<string, LocaleDict> = { [sourceLocale]: source }
+    for (const translation of registration.translations ?? []) {
+      if (translation.namespace !== namespace) {
+        throw new Error(`translation namespace "${translation.namespace}" does not match "${namespace}"`)
+      }
+      if (normalizedKey(translation.sourceLocale) !== normalizedKey(sourceLocale)) {
+        throw new Error(`translation source locale "${translation.sourceLocale}" does not match "${sourceLocale}"`)
+      }
+      if (dictionaries[translation.locale] !== undefined) {
+        throw new Error(`message registration has duplicate locale "${translation.locale}"`)
+      }
+      dictionaries[translation.locale] = translation.messages
+    }
+
+    this.sourceLocales.set(namespace, sourceLocale)
+    try {
+      const dispose = this.register(namespace, dictionaries)
+      return () => {
+        if (this.sourceLocales.get(namespace) === sourceLocale) this.sourceLocales.delete(namespace)
+        dispose()
+      }
+    } catch (error) {
+      if (this.sourceLocales.get(namespace) === sourceLocale) this.sourceLocales.delete(namespace)
+      throw error
+    }
+  }
+
+  /** Register a generated catalog from a separately shipped language pack. */
+  registerCatalog(namespace: string, catalog: TranslationCatalog): () => void {
+    if (catalog.namespace !== namespace) {
+      throw new Error(`translation namespace "${catalog.namespace}" does not match "${namespace}"`)
+    }
+    const disposeMessages = this.register(namespace, catalog.locale, catalog.messages)
+    let disposeLocale: (() => void) | undefined
+    try {
+      if (!this.catalog.has(normalizedKey(catalog.locale))) {
+        disposeLocale = this.registerLocale(inferLocaleDefinition(catalog.locale))
+      }
+    } catch (error) {
+      disposeMessages()
+      throw error
+    }
+    return () => {
+      disposeMessages()
+      disposeLocale?.()
+    }
+  }
+
+  /** Locale-aware number formatting using the active document language tag. */
+  formatNumber(value: number | bigint, options?: Intl.NumberFormatOptions): string {
+    return new Intl.NumberFormat(this.activeLanguageTag(), options).format(value)
+  }
+
+  /** Locale-aware date/time formatting using the active document language tag. */
+  formatDate(value: Date | number, options?: Intl.DateTimeFormatOptions): string {
+    return new Intl.DateTimeFormat(this.activeLanguageTag(), options).format(value)
+  }
+
+  /** Locale-aware list formatting using the active document language tag. */
+  formatList(values: Iterable<string>, options?: Intl.ListFormatOptions): string {
+    return new Intl.ListFormat(this.activeLanguageTag(), options).format(values)
+  }
+
+  /** Locale-aware relative time formatting using the active document language tag. */
+  formatRelativeTime(
+    value: number,
+    unit: Intl.RelativeTimeFormatUnit,
+    options?: Intl.RelativeTimeFormatOptions,
+  ): string {
+    return new Intl.RelativeTimeFormat(this.activeLanguageTag(), options).format(value, unit)
+  }
+
   /** Add a selectable language without replacing the locale service. */
   registerLocale(input: LocaleDefinitionInput): () => void {
     const definition = normalizeDefinition(input)
@@ -235,6 +369,7 @@ export class LocaleRuntime {
     namespace: N,
     dictionaries: Partial<Record<LocaleId, LocaleDictOf<N>>>,
   ): () => void
+  register(namespace: string, dictionaries: Partial<Record<LocaleId, LocaleDict>>): () => void
   register(namespace: string, locale: string, dictionary: LocaleDict): () => void
   register(
     namespace: string,
@@ -287,18 +422,35 @@ export class LocaleRuntime {
     const template = this.lookup(namespace, key)
       ?? (namespace !== COMMON_NS ? this.lookup(COMMON_NS, key) : undefined)
       ?? key
-    if (!params) return template
-    return template.replace(/\{(\w+)\}/gu, (match, name: string) =>
-      name in params ? String(params[name]) : match)
+    if (!template.includes('{')) return template
+    const languageTag = this.activeLanguageTag()
+    const cacheKey = `${languageTag}\u0000${template}`
+    let formatter = this.formatters.get(cacheKey)
+    if (!formatter) {
+      formatter = new IntlMessageFormat(template, languageTag)
+      this.formatters.set(cacheKey, formatter)
+    }
+    try {
+      const formatted = formatter.format(params as Parameters<IntlMessageFormat['format']>[0])
+      return Array.isArray(formatted) ? formatted.join('') : String(formatted)
+    } catch (error) {
+      console.error(`failed to format locale message "${namespace}.${key}":`, error)
+      return template
+    }
   }
 
   private lookup(namespace: string, key: string): string | undefined {
     const dictionaries = this.dicts.get(namespace)
     if (!dictionaries) return undefined
     const active = lookupDefinition(this.snapshot.locales, this.snapshot.active)
+    const declared = active?.fallback ?? []
+    const sourceLocale = this.sourceLocales.get(namespace)
     const chain = [
       active?.id,
-      ...(active?.fallback ?? []),
+      ...(active ? localeParents(active.languageTag) : []),
+      ...declared.flatMap(locale => [locale, ...localeParents(locale)]),
+      sourceLocale,
+      ...(sourceLocale ? localeParents(sourceLocale) : []),
       FALLBACK_LOCALE,
     ].filter((locale, index, values): locale is string =>
       Boolean(locale) && values.indexOf(locale) === index)
@@ -335,7 +487,25 @@ export class LocaleRuntime {
     return Object.freeze([...this.catalog.values()])
   }
 
+  private activeLanguageTag(): string {
+    return lookupDefinition(this.snapshot.locales, this.snapshot.active)?.languageTag
+      ?? this.snapshot.active
+  }
+
+  private dictionaryFromDescriptors(descriptors: MessageDescriptors): LocaleDict {
+    const dictionary: LocaleDict = {}
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (key !== descriptor.id) {
+        throw new Error(`message descriptor key "${key}" must match id "${descriptor.id}"`)
+      }
+      if (!descriptor.defaultMessage) throw new Error(`message "${key}" has an empty defaultMessage`)
+      dictionary[key] = descriptor.defaultMessage
+    }
+    return dictionary
+  }
+
   private publish(active: LocaleId, localeChanged: boolean): void {
+    if (localeChanged) this.formatters.clear()
     this.snapshot = Object.freeze({
       active,
       locales: this.localeList(),

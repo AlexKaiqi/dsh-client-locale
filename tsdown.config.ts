@@ -14,6 +14,8 @@ export default defineConfig([
     entry: {
       index: 'lib/types/index.js',
       invariant: 'lib/types/invariant.js',
+      tooling: 'lib/types/tooling.js',
+      cli: 'lib/types/cli.js',
     },
     outDir: 'lib',
     format: ['esm'],

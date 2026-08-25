@@ -5,6 +5,9 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-i18n": "lib/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
@@ -18,6 +21,10 @@
       "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
     },
+    "./tooling": {
+      "types": "./lib/types/tooling.d.ts",
+      "default": "./lib/tooling.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -26,6 +33,10 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
@@ -42,7 +53,12 @@
         "zh": "为 DeepSeek Harness 提供可扩展的全局多语言切换、BCP 47 自动匹配、英文回退与 RTL 支持。",
         "en": "Provides extensible global language switching, BCP 47 detection, English fallback, and RTL support for DeepSeek Harness."
       },
-      "tags": ["locale", "i18n", "accessibility", "platform"]
+      "tags": [
+        "locale",
+        "i18n",
+        "accessibility",
+        "platform"
+      ]
     },
     "client": {
       "inject": [
@@ -68,7 +84,10 @@
     "react": "^18.2.0"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@formatjs/cli": "^6.16.20",
+    "@formatjs/icu-messageformat-parser": "^3.5.17",
+    "intl-messageformat": "^11.2.14"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

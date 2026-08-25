@@ -4,10 +4,12 @@ import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runti
 import { type LocaleId, type LocaleSettings } from '../locale-settings.ts';
 import { type CommonKey } from '../locales/index.ts';
 import { type SettingsLocaleKey } from '../locales/settings.ts';
+import { type MessageRegistration, type TranslationCatalog } from '../messages.ts';
 export type { LanguageRowComponentProps, LanguageRowInjected } from './LanguageRow.tsx';
 export type { LanguageOptionRow, LanguageRowState } from './settings-store.ts';
 export type { CommonKey } from '../locales/index.ts';
 export type { BuiltInLocaleId, LocaleId, LocaleSettings } from '../locale-settings.ts';
+export { defineMessages, type MessageDescriptor, type MessageDescriptors, type MessageRegistration, type SourceCatalog, type TranslationCatalog, type TranslationReviewState, } from '../messages.ts';
 export type { Translate, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
@@ -61,8 +63,10 @@ export declare const BUILT_IN_LOCALES: readonly LocaleDefinitionInput[];
 export declare class LocaleRuntime {
     private readonly dicts;
     private readonly bound;
+    private readonly formatters;
     private readonly listeners;
     private readonly catalog;
+    private readonly sourceLocales;
     private snapshot;
     private readonly ctx;
     private readonly host;
@@ -73,10 +77,23 @@ export declare class LocaleRuntime {
     getSnapshot(): LocaleSnapshot;
     subscribe(listener: () => void): () => void;
     setLocale(id: string): void;
+    /** Register one authoritative source catalog plus any generated translations. */
+    registerMessages(namespace: string, registration: MessageRegistration): () => void;
+    /** Register a generated catalog from a separately shipped language pack. */
+    registerCatalog(namespace: string, catalog: TranslationCatalog): () => void;
+    /** Locale-aware number formatting using the active document language tag. */
+    formatNumber(value: number | bigint, options?: Intl.NumberFormatOptions): string;
+    /** Locale-aware date/time formatting using the active document language tag. */
+    formatDate(value: Date | number, options?: Intl.DateTimeFormatOptions): string;
+    /** Locale-aware list formatting using the active document language tag. */
+    formatList(values: Iterable<string>, options?: Intl.ListFormatOptions): string;
+    /** Locale-aware relative time formatting using the active document language tag. */
+    formatRelativeTime(value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions): string;
     /** Add a selectable language without replacing the locale service. */
     registerLocale(input: LocaleDefinitionInput): () => void;
     registerLocales(inputs: readonly LocaleDefinitionInput[]): () => void;
     register<N extends keyof LocaleNamespaceMap & string>(namespace: N, dictionaries: Partial<Record<LocaleId, LocaleDictOf<N>>>): () => void;
+    register(namespace: string, dictionaries: Partial<Record<LocaleId, LocaleDict>>): () => void;
     register(namespace: string, locale: string, dictionary: LocaleDict): () => void;
     bind<N extends keyof LocaleNamespaceMap & string>(namespace: N): TranslateNS<N>;
     bind(namespace: string): Translate;
@@ -84,6 +101,8 @@ export declare class LocaleRuntime {
     private lookup;
     private adopt;
     private localeList;
+    private activeLanguageTag;
+    private dictionaryFromDescriptors;
     private publish;
 }
 export declare const inject: string[];
